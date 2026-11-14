@@ -4,85 +4,56 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <title>Menú Bar</title>
+  <title>Menú Bar Offline</title>
   <style>
     * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      user-select: none;
-      -webkit-user-select: none;
-      -webkit-touch-callout: none;
+      margin: 0; padding: 0; box-sizing: border-box;
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
     }
     html, body {
-      width: 100vw;
-      height: 100vh;
+      width: 100vw; height: 100vh;
       background-color: #000;
       overflow: hidden;
-      /* Bloquea zoom, scroll y el gesto de recargar hacia abajo en Android */
       touch-action: none;
       overscroll-behavior: none;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       font-family: system-ui, -apple-system, sans-serif;
     }
     #setup {
-      color: #fff;
-      text-align: center;
-      padding: 24px;
-      background: #18181b;
-      border-radius: 16px;
-      border: 1px solid #3f3f46;
-      max-width: 90%;
+      color: #fff; text-align: center; padding: 24px;
+      background: #18181b; border-radius: 16px;
+      border: 1px solid #3f3f46; max-width: 90%; width: 380px;
     }
+    .badge {
+      display: inline-block; padding: 4px 10px; border-radius: 99px;
+      font-size: 12px; font-weight: 600; margin-bottom: 12px;
+      background: #3f3f46; color: #d4d4d8;
+    }
+    .badge.ready { background: #14532d; color: #86efac; }
     .btn {
-      background: #eab308;
-      color: #000;
-      font-weight: 700;
-      padding: 16px 28px;
-      border-radius: 10px;
-      cursor: pointer;
-      display: inline-block;
-      font-size: 18px;
-      border: none;
-      margin-top: 12px;
-      width: 100%;
+      background: #eab308; color: #000; font-weight: 700;
+      padding: 16px 28px; border-radius: 10px; cursor: pointer;
+      display: inline-block; font-size: 18px; border: none;
+      margin-top: 12px; width: 100%;
     }
-    .btn-start {
-      background: #22c55e;
-      color: #fff;
-      display: none;
-      margin-top: 16px;
-    }
-    input[type="file"] {
-      display: none;
-    }
+    .btn-start { background: #22c55e; color: #fff; display: none; margin-top: 16px; }
+    input[type="file"] { display: none; }
     #menu-img {
-      display: none;
-      width: 100vw;
-      height: 100vh;
-      object-fit: contain;
+      display: none; width: 100vw; height: 100vh; object-fit: contain;
     }
-    /* Botón invisible para cambiar imagen (5 toques en esquina superior izquierda) */
     #secret-reset {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 80px;
-      height: 80px;
-      z-index: 9999;
-      display: none;
+      position: fixed; top: 0; left: 0; width: 80px; height: 80px;
+      z-index: 9999; display: none;
     }
   </style>
 </head>
 <body oncontextmenu="return false;">
 
   <div id="setup">
+    <span id="offline-badge" class="badge">⏳ Preparando modo sin internet...</span>
     <h2 style="margin-bottom: 8px;">Menú Modo Kiosco</h2>
     <p id="status-text" style="color: #a1a1aa; font-size: 14px; margin-bottom: 16px;">
-      Paso 1: Elige la imagen de tu menú
+      Elige la imagen de tu menú (se quedará guardada en la tablet)
     </p>
     
     <label for="file-input" class="btn">📁 Seleccionar Imagen</label>
@@ -99,105 +70,114 @@
     const startBtn = document.getElementById('start-btn');
     const setupDiv = document.getElementById('setup');
     const statusText = document.getElementById('status-text');
+    const offlineBadge = document.getElementById('offline-badge');
     const menuImg = document.getElementById('menu-img');
     const secretReset = document.getElementById('secret-reset');
     let wakeLock = null;
 
-    // Si ya había una imagen guardada antes, permitir iniciarla directo
-    const savedImage = localStorage.getItem('kiosk_menu_img');
-    if (savedImage) {
-      menuImg.src = savedImage;
-      statusText.textContent = 'Imagen lista en memoria.';
-      startBtn.style.display = 'inline-block';
+    // 1. Registrar Service Worker para que abra SIN INTERNET
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').then(() => {
+        navigator.serviceWorker.ready.then(() => {
+          offlineBadge.textContent = '✅ Listo para usar SIN INTERNET';
+          offlineBadge.classList.add('ready');
+        });
+      });
     }
 
-    // 1. Solicitar a Android que NO apague la pantalla
+    // 2. Base de datos local (IndexedDB) para guardar imágenes pesadas sin límite
+    function abrirDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('MenuBarDB', 1);
+        req.onupgradeneeded = (e) => e.target.result.createObjectStore('imagenes');
+        req.onsuccess = (e) => resolve(e.target.result);
+        req.onerror = (e) => reject(e);
+      });
+    }
+
+    async function guardarImagenDB(blob) {
+      const db = await abrirDB();
+      const tx = db.transaction('imagenes', 'readwrite');
+      tx.objectStore('imagenes').put(blob, 'menu_actual');
+    }
+
+    async function cargarImagenDB() {
+      const db = await abrirDB();
+      return new Promise((resolve) => {
+        const tx = db.transaction('imagenes', 'readonly');
+        const req = tx.objectStore('imagenes').get('menu_actual');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      });
+    }
+
+    // Al abrir la app, recuperar la imagen guardada aunque no haya internet
+    cargarImagenDB().then((blob) => {
+      if (blob) {
+        menuImg.src = URL.createObjectURL(blob);
+        statusText.textContent = '¡Tu menú ya está guardado en la memoria de la tablet!';
+        startBtn.style.display = 'inline-block';
+      }
+    });
+
+    // Seleccionar nueva imagen y guardarla en IndexedDB
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      menuImg.src = URL.createObjectURL(file);
+      await guardarImagenDB(file);
+      statusText.textContent = '¡Imagen guardada para modo sin internet!';
+      startBtn.style.display = 'inline-block';
+    });
+
+    // WakeLock y Pantalla Completa
     async function activarWakeLock() {
       if ('wakeLock' in navigator) {
-        try {
-          wakeLock = await navigator.wakeLock.request('screen');
-        } catch (err) {
-          console.warn('WakeLock bloqueado o sin HTTPS:', err);
-        }
+        try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
       }
     }
 
-    // 2. Forzar Pantalla Completa
     async function entrarPantallaCompleta() {
       const el = document.documentElement;
       try {
         if (!document.fullscreenElement) {
-          if (el.requestFullscreen) {
-            await el.requestFullscreen({ navigationUI: "hide" });
-          } else if (el.webkitRequestFullscreen) {
-            await el.webkitRequestFullscreen();
-          }
+          if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: "hide" });
+          else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
         }
-      } catch (err) {
-        console.warn('Fullscreen error:', err);
-      }
+      } catch (e) {}
     }
 
-    // Paso 1: Cargar archivo y guardarlo
-    fileInput.addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const dataUrl = event.target.result;
-        menuImg.src = dataUrl;
-        // Guardar en localStorage por si se refresca el navegador
-        try {
-          localStorage.setItem('kiosk_menu_img', dataUrl);
-        } catch (err) {
-          console.warn('Imagen muy pesada para localStorage, se usará en RAM');
-        }
-        statusText.textContent = '¡Imagen cargada! Ahora activa el bloqueo:';
-        startBtn.style.display = 'inline-block';
-      };
-      reader.readAsDataURL(file);
-    });
-
-    // Paso 2: Botón con gesto directo para que Android acepte Fullscreen + WakeLock
     startBtn.addEventListener('click', async () => {
       setupDiv.style.display = 'none';
       menuImg.style.display = 'block';
       secretReset.style.display = 'block';
-
       await entrarPantallaCompleta();
       await activarWakeLock();
     });
 
-    // 3. Defensa activa: Si un invitado toca la pantalla, re-forzar Fullscreen y WakeLock
     menuImg.addEventListener('touchstart', async (e) => {
       e.preventDefault();
       await entrarPantallaCompleta();
-      if (!wakeLock || wakeLock.released) {
-        await activarWakeLock();
-      }
+      if (!wakeLock || wakeLock.released) await activarWakeLock();
     }, { passive: false });
 
-    // Re-activar WakeLock si la pantalla parpadea
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && menuImg.style.display === 'block') {
         activarWakeLock();
       }
     });
 
-    // Bloquear gestos multitouch (zoom, pellizco, arrastre)
     document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
     document.addEventListener('gesturestart', (e) => e.preventDefault());
 
-    // Puerta trasera tuya: 5 toques rápidos en la esquina superior izquierda para cambiar de foto
-    let taps = 0;
-    let lastTap = 0;
+    // 5 toques rápidos en la esquina superior izquierda para salir
+    let taps = 0, lastTap = 0;
     secretReset.addEventListener('touchstart', (e) => {
       e.stopPropagation();
       const now = Date.now();
       taps = (now - lastTap < 500) ? taps + 1 : 1;
       lastTap = now;
-
       if (taps >= 5) {
         taps = 0;
         if (document.fullscreenElement) document.exitFullscreen();
