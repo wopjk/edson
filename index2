@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Menú Bar Offline</title>
+  <style>
+    * {
+      margin: 0; padding: 0; box-sizing: border-box;
+      user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+    }
+    html, body {
+      width: 100vw; height: 100vh;
+      background-color: #000;
+      overflow: hidden;
+      touch-action: none;
+      overscroll-behavior: none;
+      display: flex; align-items: center; justify-content: center;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    #setup {
+      color: #fff; text-align: center; padding: 24px;
+      background: #18181b; border-radius: 16px;
+      border: 1px solid #3f3f46; max-width: 92%; width: 400px;
+    }
+    .badge {
+      display: inline-block; padding: 4px 10px; border-radius: 99px;
+      font-size: 12px; font-weight: 600; margin-bottom: 12px;
+      background: #3f3f46; color: #d4d4d8;
+    }
+    .badge.ready { background: #14532d; color: #86efac; }
+    #preview-box {
+      display: none;
+      margin: 12px auto;
+      padding: 8px;
+      background: #09090b;
+      border-radius: 10px;
+      border: 1px solid #27272a;
+    }
+    #preview-img {
+      max-height: 170px;
+      max-width: 100%;
+      border-radius: 6px;
+      display: block;
+      margin: 0 auto;
+    }
+    .btn {
+      background: #eab308; color: #000; font-weight: 700;
+      padding: 15px 20px; border-radius: 10px; cursor: pointer;
+      display: block; font-size: 16px; border: none;
+      margin-top: 10px; width: 100%;
+    }
+    .btn-delete { background: #dc2626; color: #fff; display: none; }
+    .btn-start { background: #22c55e; color: #fff; display: none; margin-top: 14px; font-size: 18px; }
+    #menu-img {
+      display: none; width: 100vw; height: 100vh; object-fit: contain;
+    }
+    #secret-reset {
+      position: fixed; top: 0; left: 0; width: 120px; height: 120px;
+      z-index: 9999; display: none;
+    }
+  </style>
+</head>
+<body oncontextmenu="return false;">
+
+  <div id="setup">
+    <span id="offline-badge" class="badge">⏳ Verificando modo offline...</span>
+    <h2 style="margin-bottom: 6px;">Menú Modo Kiosco</h2>
+    <p id="status-text" style="color: #a1a1aa; font-size: 14px; margin-bottom: 12px;">
+      Selecciona la imagen del menú
+    </p>
+
+    <div id="preview-box">
+      <img id="preview-img" alt="Menú actual">
+    </div>
+    
+    <button id="pick-btn" class="btn">📁 Seleccionar Imagen Nueva</button>
+    <input type="file" id="file-input" accept="image/*" style="display:none;">
+
+    <button id="delete-btn" class="btn btn-delete">🗑️ Quitar Imagen Anterior</button>
+    <button id="start-btn" class="btn btn-start">🔒 Activar Pantalla Completa</button>
+  </div>
+
+  <img id="menu-img" alt="Menú" draggable="false">
+  <div id="secret-reset"></div>
+
+  <script>
+    const pickBtn = document.getElementById('pick-btn');
+    const fileInput = document.getElementById('file-input');
+    const deleteBtn = document.getElementById('delete-btn');
+    const startBtn = document.getElementById('start-btn');
+    const setupDiv = document.getElementById('setup');
+    const statusText = document.getElementById('status-text');
+    const offlineBadge = document.getElementById('offline-badge');
+    const previewBox = document.getElementById('preview-box');
+    const previewImg = document.getElementById('preview-img');
+    const menuImg = document.getElementById('menu-img');
+    const secretReset = document.getElementById('secret-reset');
+    let wakeLock = null;
+
+    // 1. Service Worker para modo sin internet
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').then(() => {
+        navigator.serviceWorker.ready.then(() => {
+          offlineBadge.textContent = '✅ Listo para usar SIN INTERNET';
+          offlineBadge.classList.add('ready');
+        });
+      });
+    }
+
+    // 2. Base de datos IndexedDB (guarda texto Base64 puro para evitar bloqueo de permisos en Android)
+    function abrirDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('MenuBarDB_v2', 1);
+        req.onupgradeneeded = (e) => e.target.result.createObjectStore('imagenes');
+        req.onsuccess = (e) => resolve(e.target.result);
+        req.onerror = (e) => reject(e);
+      });
+    }
+
+    async function guardarDataUrlDB(dataUrl) {
+      try {
+        const db = await abrirDB();
+        return new Promise((resolve) => {
+          const tx = db.transaction('imagenes', 'readwrite');
+          tx.objectStore('imagenes').put(dataUrl, 'menu_actual');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      } catch (e) {}
+    }
+
+    async function borrarImagenDB() {
+      try {
+        const db = await abrirDB();
+        return new Promise((resolve) => {
+          const tx = db.transaction('imagenes', 'readwrite');
+          tx.objectStore('imagenes').delete('menu_actual');
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => resolve();
+        });
+      } catch (e) {}
+    }
+
+    async function cargarImagenDB() {
+      try {
+        const db = await abrirDB();
+        return new Promise((resolve) => {
+          const tx = db.transaction('imagenes', 'readonly');
+          const req = tx.objectStore('imagenes').get('menu_actual');
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => resolve(null);
+        });
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function aplicarImagenEnPantalla(dataUrl) {
+      menuImg.src = dataUrl;
+      previewImg.src = dataUrl;
+      previewBox.style.display = 'block';
+      deleteBtn.style.display = 'block';
+      startBtn.style.display = 'block';
+      statusText.textContent = 'Imagen lista y guardada en la tablet:';
+    }
+
+    function limpiarPantalla() {
+      menuImg.removeAttribute('src');
+      previewImg.removeAttribute('src');
+      previewBox.style.display = 'none';
+      deleteBtn.style.display = 'none';
+      startBtn.style.display = 'none';
+      fileInput.value = '';
+      statusText.textContent = 'No hay imagen guardada. Elige una nueva:';
+    }
+
+    // Cargar imagen guardada al abrir
+    cargarImagenDB().then((dataUrl) => {
+      if (dataUrl) aplicarImagenEnPantalla(dataUrl);
+    });
+
+    // Forzar reinicio del input antes de abrir galería (permite elegir archivos con el mismo nombre)
+    pickBtn.addEventListener('click', () => {
+      fileInput.value = '';
+      fileInput.click();
+    });
+
+    // Leer archivo como DataURL puro, mostrarlo al instante y guardarlo
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      statusText.textContent = 'Cargando imagen...';
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const dataUrl = event.target.result;
+        aplicarImagenEnPantalla(dataUrl);
+        await guardarDataUrlDB(dataUrl);
+        fileInput.value = '';
+      };
+      reader.readAsDataURL(file);
+    });
+
+    // Botón para borrar la imagen anterior
+    deleteBtn.addEventListener('click', async () => {
+      await borrarImagenDB();
+      limpiarPantalla();
+    });
+
+    // WakeLock y Pantalla Completa
+    async function activarWakeLock() {
+      if ('wakeLock' in navigator) {
+        try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+      }
+    }
+
+    async function entrarPantallaCompleta() {
+      const el = document.documentElement;
+      try {
+        if (!document.fullscreenElement) {
+          if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: "hide" });
+          else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+        }
+      } catch (e) {}
+    }
+
+    startBtn.addEventListener('click', async () => {
+      setupDiv.style.display = 'none';
+      menuImg.style.display = 'block';
+      secretReset.style.display = 'block';
+      await entrarPantallaCompleta();
+      await activarWakeLock();
+    });
+
+    menuImg.addEventListener('touchstart', async (e) => {
+      e.preventDefault();
+      await entrarPantallaCompleta();
+      if (!wakeLock || wakeLock.released) await activarWakeLock();
+    }, { passive: false });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && menuImg.style.display === 'block') {
+        activarWakeLock();
+      }
+    });
+
+    document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    document.addEventListener('gesturestart', (e) => e.preventDefault());
+
+    // 5 toques rápidos en la esquina superior izquierda para salir
+    let taps = 0, lastTap = 0;
+    secretReset.addEventListener('touchstart', (e) => {
+      e.stopPropagation();
+      const now = Date.now();
+      taps = (now - lastTap < 600) ? taps + 1 : 1;
+      lastTap = now;
+      if (taps >= 5) {
+        taps = 0;
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        menuImg.style.display = 'none';
+        secretReset.style.display = 'none';
+        setupDiv.style.display = 'block';
+      }
+    });
+  </script>
+</body>
+</html>
