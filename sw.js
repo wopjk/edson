@@ -1,4 +1,4 @@
-const CACHE_NAME = 'menu-kiosco-v1';
+const CACHE_NAME = 'menu-kiosco-v3';
 const ASSETS = ['./', './index.html'];
 
 self.addEventListener('install', (e) => {
